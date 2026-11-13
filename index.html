@@ -73,40 +73,7 @@ kbd{background:#2a2f3c;border-radius:4px;padding:1px 5px;font-size:11px}
     <div class="usb" title="USB-C"></div>
   </div>
 
-  <div class="panel">
-    <section>
-      <h2>💾 SD CARD</h2>
-      <button class="pbtn" id="load">Load MP3s from computer</button>
-      <input type="file" id="file" accept="audio/*,.mp3" multiple hidden>
-      <div class="small" id="songCount"></div>
-      <div class="small">Name files <b>Artist - Title.mp3</b> and the artist shows up on Now Playing.</div>
-    </section>
-    <section>
-      <h2>🎮 CONTROLS</h2>
-      <table>
-        <tr><td>▲ ▼</td><td>Move in menus · volume when playing</td></tr>
-        <tr><td>◀◀ ▶▶ tap</td><td>Back / open · previous / next song</td></tr>
-        <tr><td>◀◀ ▶▶ hold</td><td>Rewind / fast-forward through the song (speeds up the longer you hold)</td></tr>
-        <tr><td>OK</td><td>Select · play/pause · <b>hold</b> = favorite</td></tr>
-        <tr><td>MENU</td><td>Back</td></tr>
-        <tr><td>Keyboard</td><td><kbd>arrows</kbd> <kbd>Enter</kbd> <kbd>Esc</kbd> (hold works too), type names directly</td></tr>
-      </table>
-    </section>
-    <section>
-      <h2>🎨 SHELL COLOR</h2>
-      <div class="sw" id="sw"></div>
-      <div class="small">Screen themes are per-account: Settings → Theme.</div>
-    </section>
-    <section>
-      <h2>🌐 ONLINE</h2>
-      <div class="small" style="margin-top:0">Home → <b>Online</b>. <b>Search songs</b> finds any real song (30-second iTunes preview). <b>Search Audius</b> and <b>Trending</b> play full songs from indie artists. The swear filter applies to both. Needs internet; a school network may block these sites.</div>
-    </section>
-    <section>
-      <h2>🔋 BATTERY</h2>
-      <button class="pbtn" id="charge">Plug in charger</button>
-      <div class="small">Speaker output cuts sub-bass like a real 40 mm driver. Headphones get the full boost.</div>
-    </section>
-  </div>
+  <input type="file" id="file" accept="audio/*,.mp3" multiple hidden>
 </div>
 
 <script>
@@ -287,7 +254,9 @@ function jsonp(url){return new Promise((res,rej)=>{
   window[cb]=d=>{done();res(d)};s.onerror=()=>{done();rej(new Error('net'))};
   s.src=url+'&callback='+cb;document.head.appendChild(s)})}
 async function onlineSearch(src,q){
-  if(src==='spotify'){const d=await spApi('/search?type=track&limit=30&q='+encodeURIComponent(q));return cleanF(d.tracks.items.map(spTrack).filter(Boolean))}
+  if(src==='spotify'){ // dev-mode apps max out at limit=10 since Feb 2026, so grab 3 pages
+    const pages=await Promise.all([0,10,20].map(o=>spApi(`/search?type=track&limit=10&offset=${o}&q=${encodeURIComponent(q)}`).catch(e=>{if(!o)throw e;return null})));
+    return cleanF(pages.filter(Boolean).flatMap(d=>(d.tracks&&d.tracks.items)||[]).map(spTrack).filter(Boolean))}
   if(src==='itunes'){
     // JSONP, not fetch: iTunes doesn't send CORS headers when the page is opened as a file (Origin: null)
     const d=await jsonp(`https://itunes.apple.com/search?media=music&entity=song&limit=30${swearMode()===2?'&explicit=No':''}&term=${encodeURIComponent(q)}`);
@@ -594,8 +563,16 @@ function songsScreen(title,getList,empty){
     long:(m,scr)=>{const L=getList();const t=L[scr.sel];if(t)toggleFav(t.name,t)}});
 }
 // a song list that loads from the internet (trending etc.)
+// turn a failed request into a message that says what actually went wrong
+function netErr(e,mode){const m=String(e&&e.message||'');
+  if(m==='nologin')return'Log in to|Spotify first';
+  if(mode==='spotify'||/^http \d|invalid|limit|premium|token|forbidden|quota/i.test(m)){
+    if(/quota|429/i.test(m))return'Spotify says|slow down. Try|again in a bit';
+    if(/premium/i.test(m))return'Needs Spotify|Premium';
+    return'Spotify error:|'+fit(m,200)}
+  return'No internet,|or this site is|blocked here'}
 function onlineList(title,loader){const st={L:null,err:''};
-  loader().then(L=>st.L=L).catch(()=>st.err='No internet,|or this site is|blocked here');
+  loader().then(L=>st.L=L).catch(e=>st.err=netErr(e,/^sp/.test(title)||SP.tok?'spotify':''));
   return songsScreen(title,()=>st.L||[],()=>st.err||(st.L?'Nothing found':'Loading...'));
 }
 function onlineMenu(){return listScreen({title:'Online',items:()=>[
@@ -683,7 +660,7 @@ function searchScreen(mode='local'){const online=mode!=='local';return{wantsText
   tick(){if(!online)return;const q=this.q.trim();
     if(q&&q!==this.lastQ&&now()-this.typedAt>600){this.lastQ=q;const id=++this.reqId;this.status='Searching...';
       onlineSearch(mode,q).then(L=>{if(id!==this.reqId)return;this.res=L;this.status='';this.sel=-1;this.off=0})
-        .catch(()=>{if(id!==this.reqId)return;this.res=[];this.status='No internet,|or this site is|blocked here'})}},
+        .catch(e=>{if(id!==this.reqId)return;this.res=[];this.status=netErr(e,mode)})}},
   draw(){this.tick();body();header(mode==='itunes'?'Search songs':mode==='audius'?'Search Audius':mode==='spotify'?'Spotify':'Search');const R=this.results(),inBox=this.sel<0;
     rfill(6,30,228,30,8,T.panel);rstroke(6,30,228,30,8,inBox?T.accent:T.line);icon(12,37,IC.search,T.muted);
     const shown=this.q.length>16?this.q.slice(-16):this.q;text(32,38,shown,2,T.text);
@@ -717,6 +694,11 @@ function searchScreen(mode='local'){const online=mode!=='local';return{wantsText
       else if(k==='okLong'&&R[this.sel])toggleFav(R[this.sel].name,R[this.sel]);
     }
   }}}
+function controlsScreen(){return{
+  draw(){body();header('Controls');rfill(8,32,224,282,12,T.panel);
+    [['UP/DOWN','move, volume'],['LEFT/RIGHT','back, prev/next'],['HOLD LEFT/RIGHT','rewind/forward'],['OK','select, play'],['HOLD OK','favorite'],['MENU','back'],['KEYBOARD','arrows,Enter,Esc']]
+      .forEach(([a,b],i)=>{text(16,40+i*39,a,2,T.accent);text(28,58+i*39,b,2,T.text)})},
+  key(k){if(k==='menu'||k==='left'||k==='ok')pop()}}}
 function settingsScreen(){return listScreen({title:'Settings',items:()=>[
   {label:'Theme',icon:IC.brush,value:THEMES[S().theme||0].n,sub:true,act:()=>push(themeScreen())},
   {label:'Brightness',value:['Low','Med','High'][DB.device.bright],act(){DB.device.bright=(DB.device.bright+1)%3;save()}},
@@ -728,7 +710,10 @@ function settingsScreen(){return listScreen({title:'Settings',items:()=>[
   {label:'Add User',icon:IC.user,sub:true,act(){if(DB.users.length>=6)return toast('Max 6 users');const base=stack.length;
     newUserFlow(u=>{DB.users.push(u);save();stack.length=base;toast('Added '+u.name+'!')})}},
   {label:'Device Name',value:DB.device.name,act(){push(textEdit({title:'Device name',init:DB.device.name,done(v){DB.device.name=v;save();pop();toast('Renamed!')}}))}},
-  {label:'SD Card',icon:IC.sd,value:P.lib.length,act(){document.getElementById('file').click()}},
+  {label:'Load Music',icon:IC.sd,value:P.lib.length+' songs',act(){document.getElementById('file').click()}},
+  {label:'Shell Color',value:SHELL_NAMES[DB.device.shell]||'White',act(){DB.device.shell=(DB.device.shell+1)%SHELLS.length;save();applyShell()}},
+  {label:'Battery',value:Math.round(battery)+'%',act:chargeBattery},
+  {label:'Controls',sub:true,act:()=>push(controlsScreen())},
   {label:'About',sub:true,act:()=>push(aboutScreen())},
   {label:'Factory Reset',act:()=>push(confirmScreen('Erase EVERYTHING?|All users and|settings go away',factoryReset))}]})}
 function accountScreen(){return listScreen({title:()=>user.name,items:()=>[
@@ -756,7 +741,7 @@ setInterval(()=>{
   if(charging)return;if(!power)return;battery=Math.max(0,battery-(plPaused()?0.5:1));
   if(battery===10)toast('Low battery!');if(battery<=0&&power)powerToggle();
 },30000);
-document.getElementById('charge').onclick=()=>{charging=true;toast('Charging...');setTimeout(()=>{battery=100;charging=false},3000)};
+function chargeBattery(){charging=true;toast('Charging...');setTimeout(()=>{battery=100;charging=false},3000)}
 
 let lastFilter='';
 function frame(){
@@ -807,25 +792,21 @@ addEventListener('keydown',e=>{
 addEventListener('keyup',e=>{const k=KMAP[e.key];if(k)pressEnd(k)});
 addEventListener('blur',()=>Object.keys(held).forEach(k=>{const h=held[k];delete held[k];clearTimeout(h.t);btnEl(k)?.classList.remove('pressed')}));
 
-// ================= SIDE PANEL =================
+// ================= LOAD MUSIC / SHELL (in Settings) =================
 const fileIn=document.getElementById('file');
-document.getElementById('load').onclick=()=>fileIn.click();
 fileIn.onchange=()=>{
   const fs=[...fileIn.files].filter(f=>f.type.startsWith('audio')||/\.(mp3|wav|ogg|m4a)$/i.test(f.name));
   for(const f of fs){const name=f.name.replace(/\.[^.]+$/,'');if(!P.lib.some(t=>t.name===name))P.lib.push(mkSong(name,URL.createObjectURL(f)))}
   P.lib.sort((a,b)=>(a.name.includes('(demo)')-b.name.includes('(demo)'))||a.title.localeCompare(b.title));
-  updateCount();if(fs.length)toast('Found '+fs.length+' song'+(fs.length>1?'s':'')+'!');fileIn.value='';
+  if(fs.length)toast('Found '+fs.length+' song'+(fs.length>1?'s':'')+'!');fileIn.value='';
 };
-function updateCount(){document.getElementById('songCount').textContent=P.lib.length+' songs on card (loaded songs last until you refresh)'}
+const SHELL_NAMES=['White','Black','Red','Blue','Purple','Green','Yellow'];
 const SHELLS=[['#ececf1','#c8c9d2','#f8f8fb','#9a9caa'],['#41444d','#1d1f25','#2b2d34','#8d92a0'],['#ef5a5f','#a8262b','#f6f6f8','#b0535a'],
   ['#5b9bff','#2459b8','#f6f6f8','#4d6fae'],['#a77bf3','#5f36b0','#f6f6f8','#7a5bb0'],['#4fd18a','#1f8a4e','#f6f6f8','#3f8a63'],['#ffcf4a','#d49a12','#fffaf0','#b58a2a']];
 function applyShell(){const v=SHELLS[DB.device.shell]||SHELLS[0],r=document.documentElement.style;
-  r.setProperty('--shell',v[0]);r.setProperty('--shell2',v[1]);r.setProperty('--wheel',v[2]);r.setProperty('--wheelText',v[3]);
-  document.querySelectorAll('#sw button').forEach((b,i)=>b.classList.toggle('sel',i===DB.device.shell))}
-SHELLS.forEach((v,i)=>{const b=document.createElement('button');b.style.background=`linear-gradient(160deg,${v[0]},${v[1]})`;b.title='Shell color';
-  b.onclick=()=>{DB.device.shell=i;save();applyShell()};document.getElementById('sw').appendChild(b)});
+  r.setProperty('--shell',v[0]);r.setProperty('--shell2',v[1]);r.setProperty('--wheel',v[2]);r.setProperty('--wheelText',v[3])}
 
-applyShell();updateCount();boot();frame();
+applyShell();boot();frame();
 spHandleRedirect().then(()=>{if(SP.tok)spInit();if(SP.toast)setTimeout(()=>toast(SP.toast,2200),1900)});
 </script>
 </body>
